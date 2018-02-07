@@ -113,10 +113,10 @@ def find_glance_image_and_cs_endpoint(auth_token, headers, cs_endpoints, glance_
             region = potential_url.split('//')[1].split('.')[0]
             print ("Found image %s in %s region" % (glance_image, region))
             break
-        for endpoint in cs_endpoints:
-            if region in endpoint:
-                cs_endpoint = endpoint
-    print cs_endpoint
+    for endpoint in cs_endpoints:
+        if region in endpoint:
+            cs_endpoint = endpoint
+            print cs_endpoint
     return glance_object, cs_endpoint, region
 
     #if we make it this far, the glance image UUID is invalid
@@ -126,6 +126,11 @@ def find_glance_image_and_cs_endpoint(auth_token, headers, cs_endpoints, glance_
 def check_glance_image(auth_token, headers, glance_image, glance_object):
     # sanity checks
     print ("Verifying image status...")
+    glance_image_type = (glance_object.json()["image_type"])
+    # will not try to convert base image
+    if glance_image_type != "snapshot":
+        print ("Error! I won't convert a base image.")
+        sys.exit(status=None)
     glance_status = (glance_object.json()["status"])
     if glance_status != "active":
         print ("Error! Wrong status for glance image %s. Expected 'active' ,\
@@ -162,11 +167,14 @@ def check_glance_image(auth_token, headers, glance_image, glance_object):
         sys.exit()
 
 def determine_server_flavor(auth_token, headers, glance_image, glance_object):
-    # for speed's sake, we will build General Purpose servers for Servers
+    # for speed's sake, we will build General Purpose servers if possible
     min_disk = (glance_object.json()["min_disk"])
     if min_disk <= 160:
         disk_multiplier = 20
         flavor_type = "general"
+        if (min_disk % disk_multiplier) != 0:
+            print ("Error! min_disk value should be a multiple of 20.")
+            sys.exit()
         flavor_memory = str(min_disk / disk_multiplier)
         flavor = flavor_type + "1-" + flavor_memory
         return flavor
@@ -182,8 +190,21 @@ def determine_server_flavor(auth_token, headers, glance_image, glance_object):
     print ("Error! Could not determine flavor to use.")
     sys.exit()
 
-def build_server(auth_token, headers, region, glance_image, glance_object, flavor):
-    cs_endpoint = "fooferal"
+def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, flavor):
+    print (cs_endpoint)
+#The script to inject at boot time. Personality is really small, so we
+#must call out to another script to complete our conversion.
+dl_script='''
+#!/usr/bin/env bash
+# Download script to perform PV to HVM conversion
+#this is injected into /etc/rc.local at boot time
+wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
+/usr/bin/env bash /tmp/hvm.sh
+#Only used for troubleshooting, does not need to be in final script
+ssh-keygen -A
+'''
+personality = base64.b64encode(dl_script)
+print (personality)
 # '{"server": {"name": "bking-d6-conv01", "imageRef": "23e4e7cb-5900-4544-a06c-338658dd8802", "key_name": "rackesc", "flavorRef": "performance1-1", "max_count": 1, "min_count": 1, "networks": [{"uuid": "29b682af-0ef3-4ba8-83c6-8e2ea8e6d7ee"}, {"uuid": "00000000-0000-0000-0000-000000000000"}, {"uuid": "11111111-1111-1111-1111-111111111111"}], "personality": [{"path": "/etc/rc.d/rc.local", "contents": "IyEvdXNyL2Jpbi9lbnYgYmFzaAojIERvd25sb2FkIHNjcmlwdCB0byBwZXJmb3JtIFBWIHRvIEhWTSBjb252ZXJzaW9uCiN0aGlzIGlzIGluamVjdGVkIGludG8gL2V0Yy9yYy5sb2NhbCBhdCBib290IHRpbWUKd2dldCAtcU8gL3RtcC9odm0uc2ggaHR0cDovL2U5NDJiMDI5YzI1NmVjMzIzMTM0LWQxNDA4Yjk2ODkyODU2MTgyMzEwOWNiNjZjNDdlYmNkLnIzNy5jZjUucmFja2Nkbi5jb20vaHZtLnNoCi91c3IvYmluL2VudiBiYXNoIC90bXAvaHZtLnNoCiNPbmx5IHVzZWQgZm9yIHRyb3VibGVzaG9vdGluZywgZG9lcyBub3QgbmVlZCB0byBiZSBpbiBmaW5hbCBzY3JpcHQKc3NoLWtleWdlbiAtQQ=="}, {"path": "/etc/rc.local", "contents": "IyEvdXNyL2Jpbi9lbnYgYmFzaAojIERvd25sb2FkIHNjcmlwdCB0byBwZXJmb3JtIFBWIHRvIEhWTSBjb252ZXJzaW9uCiN0aGlzIGlzIGluamVjdGVkIGludG8gL2V0Yy9yYy5sb2NhbCBhdCBib290IHRpbWUKd2dldCAtcU8gL3RtcC9odm0uc2ggaHR0cDovL2U5NDJiMDI5YzI1NmVjMzIzMTM0LWQxNDA4Yjk2ODkyODU2MTgyMzEwOWNiNjZjNDdlYmNkLnIzNy5jZjUucmFja2Nkbi5jb20vaHZtLnNoCi91c3IvYmluL2VudiBiYXNoIC90bXAvaHZtLnNoCiNPbmx5IHVzZWQgZm9yIHRyb3VibGVzaG9vdGluZywgZG9lcyBub3QgbmVlZCB0byBiZSBpbiBmaW5hbCBzY3JpcHQKc3NoLWtleWdlbiAtQQ=="}]}}'
 
 #begin main function
@@ -198,7 +219,7 @@ def main(glance_image):
     glance_object, cs_endpoint, region = find_glance_image_and_cs_endpoint(auth_token, headers, cs_endpoints, glance_endpoints, glance_image)
     check_glance_image(auth_token, headers, glance_image, glance_object)
     flavor = determine_server_flavor(auth_token, headers, glance_image, glance_object)
-    build_server(auth_token, headers, region, glance_image, glance_object, flavor)
+    build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, flavor)
 
 if __name__ == '__main__':
     import plac
