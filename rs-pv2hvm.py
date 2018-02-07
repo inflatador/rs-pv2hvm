@@ -116,7 +116,6 @@ def find_glance_image_and_cs_endpoint(auth_token, headers, cs_endpoints, glance_
     for endpoint in cs_endpoints:
         if region in endpoint:
             cs_endpoint = endpoint
-            print cs_endpoint
     return glance_object, cs_endpoint, region
 
     #if we make it this far, the glance image UUID is invalid
@@ -191,27 +190,34 @@ def determine_server_flavor(auth_token, headers, glance_image, glance_object):
     sys.exit()
 
 def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, flavor):
-    print (cs_endpoint)
-#The script to inject at boot time. Personality is really small, so we
-#must call out to another script to complete our conversion.
-dl_script='''
-#!/usr/bin/env bash
-# Download script to perform PV to HVM conversion
-#this is injected into /etc/rc.local at boot time
-wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
-/usr/bin/env bash /tmp/hvm.sh
-#Only used for troubleshooting, does not need to be in final script
-ssh-keygen -A
-'''
-personality = base64.b64encode(dl_script)
-print (personality)
-# '{"server": {"name": "bking-d6-conv01", "imageRef": "23e4e7cb-5900-4544-a06c-338658dd8802", "key_name": "rackesc", "flavorRef": "performance1-1", "max_count": 1, "min_count": 1, "networks": [{"uuid": "29b682af-0ef3-4ba8-83c6-8e2ea8e6d7ee"}, {"uuid": "00000000-0000-0000-0000-000000000000"}, {"uuid": "11111111-1111-1111-1111-111111111111"}], "personality": [{"path": "/etc/rc.d/rc.local", "contents": "IyEvdXNyL2Jpbi9lbnYgYmFzaAojIERvd25sb2FkIHNjcmlwdCB0byBwZXJmb3JtIFBWIHRvIEhWTSBjb252ZXJzaW9uCiN0aGlzIGlzIGluamVjdGVkIGludG8gL2V0Yy9yYy5sb2NhbCBhdCBib290IHRpbWUKd2dldCAtcU8gL3RtcC9odm0uc2ggaHR0cDovL2U5NDJiMDI5YzI1NmVjMzIzMTM0LWQxNDA4Yjk2ODkyODU2MTgyMzEwOWNiNjZjNDdlYmNkLnIzNy5jZjUucmFja2Nkbi5jb20vaHZtLnNoCi91c3IvYmluL2VudiBiYXNoIC90bXAvaHZtLnNoCiNPbmx5IHVzZWQgZm9yIHRyb3VibGVzaG9vdGluZywgZG9lcyBub3QgbmVlZCB0byBiZSBpbiBmaW5hbCBzY3JpcHQKc3NoLWtleWdlbiAtQQ=="}, {"path": "/etc/rc.local", "contents": "IyEvdXNyL2Jpbi9lbnYgYmFzaAojIERvd25sb2FkIHNjcmlwdCB0byBwZXJmb3JtIFBWIHRvIEhWTSBjb252ZXJzaW9uCiN0aGlzIGlzIGluamVjdGVkIGludG8gL2V0Yy9yYy5sb2NhbCBhdCBib290IHRpbWUKd2dldCAtcU8gL3RtcC9odm0uc2ggaHR0cDovL2U5NDJiMDI5YzI1NmVjMzIzMTM0LWQxNDA4Yjk2ODkyODU2MTgyMzEwOWNiNjZjNDdlYmNkLnIzNy5jZjUucmFja2Nkbi5jb20vaHZtLnNoCi91c3IvYmluL2VudiBiYXNoIC90bXAvaHZtLnNoCiNPbmx5IHVzZWQgZm9yIHRyb3VibGVzaG9vdGluZywgZG9lcyBub3QgbmVlZCB0byBiZSBpbiBmaW5hbCBzY3JpcHQKc3NoLWtleWdlbiAtQQ=="}]}}'
+    cs_endpoint = ("%s/servers" % (cs_endpoint))
+    #The script to inject at boot time. Personality is really small, so we
+    #must call out to another script to complete our conversion.
+    #We can't use cloud-init as it's not installed on older images
+    dl_script='''
+    #!/usr/bin/env bash
+    # This is injected into /etc/rc.local at boot time
+    #Download script to perform PV to HVM conversion
+    wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
+    /usr/bin/env bash /tmp/hvm.sh
+    '''
+    personality = base64.b64encode(dl_script)
+    image_name=(glance_object.json()["name"])
+    #FIXME: remove SSH key in final version
+    payload = (
+    { "server": {"name": image_name, "key_name": "rackesc",
+                "imageRef": glance_image, "flavorRef": flavor,
+                "personality": [{"path": "/etc/rc.d/rc.local",
+                "contents": personality}, {"path": "/etc/rc.local",
+                "contents": personality}]}}
+     )
+    server_build = requests.post(url=cs_endpoint, headers=headers, json=payload)
+    print server_build.json()
 
 #begin main function
 @plac.annotations(
     glance_image=plac.Annotation("UUID of Cloud Server image")
                 )
-
 def main(glance_image):
     username,password = getset_keyring_credentials()
     auth_token = get_auth_token(username, password)
