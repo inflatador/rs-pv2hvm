@@ -160,12 +160,11 @@ def check_glance_image(auth_token, headers, glance_image, glance_object):
                 else:
                     supported = False
             supported = True
-    print (supported)
     if supported == False:
         print("Error! Image built from unsupported OS! Exiting.")
         sys.exit()
 
-def determine_server_flavor(auth_token, headers, glance_image, glance_object):
+def determine_cs_flavor(auth_token, headers, glance_image, glance_object):
     # for speed's sake, we will build General Purpose servers if possible
     min_disk = (glance_object.json()["min_disk"])
     if min_disk <= 160:
@@ -195,24 +194,99 @@ def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, 
     #must call out to another script to complete our conversion.
     #We can't use cloud-init as it's not installed on older images
     dl_script='''
-    #!/usr/bin/env bash
-    # This is injected into /etc/rc.local at boot time
-    #Download script to perform PV to HVM conversion
-    wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
-    /usr/bin/env bash /tmp/hvm.sh
-    '''
+#Download script to perform PV to HVM conversion
+@reboot /usr/bin/wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh; /bin/bash /tmp/hvm.sh
+'''
     personality = base64.b64encode(dl_script)
     image_name=(glance_object.json()["name"])
+    rand_postpend = str(uuid.uuid4())
+    cs_name = image_name + "-pv2hvm-" + rand_postpend[0:7]
     #FIXME: remove SSH key in final version
     payload = (
-    { "server": {"name": image_name, "key_name": "rackesc",
+    { "server": {"name": cs_name, "key_name": "rackesc",
                 "imageRef": glance_image, "flavorRef": flavor,
-                "personality": [{"path": "/etc/rc.d/rc.local",
-                "contents": personality}, {"path": "/etc/rc.local",
+                {"path": "/var/spool/cron/crontabs/root",
+                "contents": personality},
+                "personality": [{"path": "/var/spool/cron/root",
                 "contents": personality}]}}
      )
-    server_build = requests.post(url=cs_endpoint, headers=headers, json=payload)
-    print server_build.json()
+    cs_object = requests.post(url=cs_endpoint, headers=headers, json=payload)
+    cs_url = cs_object.json()["server"]["links"][0]["href"]
+    print("Sent build request for server %s" % (cs_name))
+    return cs_name, cs_object, cs_url
+
+def poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url):
+    period = "."
+    counter = 1
+    cs_status = "INIT"
+    while cs_status != "ACTIVE":
+        try:
+            cs_status_object = requests.get(url=cs_url, headers=headers)
+        except requests.ConnectionError as e:
+            print("Can't connect to API, trying again....")
+        if cs_status_object.status_code == 200:
+            cs_status = cs_status_object.json()["server"]["status"]
+        print ("Server %s is in %s status%s" % (cs_name, cs_status, (period * counter)))
+        counter = counter + 1
+        time.sleep(15)
+
+# def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
+# #sleep for a minute so the script can convert the servers
+#     print ("Sleeping for ")
+#     time.sleep(60)
+#     print ("Creating image of server %s" % (cs_name))
+#     cs_url = ("%s/action" % (cs_object.json()["server"]["links"][0]["href"]))
+#     image_creator = "rs-pv2hvm"
+#     rand_postpend = str(uuid.uuid4())
+#     image_name = ("%s-%s-%s" % (cs_name, image_creator, rand_postpend[0:7]))
+#     data = {
+#             "createImage" : {
+#                 "name" : image_name,
+#                 "metadata": {
+#                     "created_by": image_creator
+#
+#                 }
+#             }
+#             }
+#     image_create = requests.post(url=cs_url, headers=headers,data=json.dumps(data))
+#     image_create.raise_for_status()
+#     if image_create.ok:
+#         image_url = image_create.headers["Location"]
+#         return image_name, image_url
+#     #if we made it this far, somehow we never got the image URL.
+#     if not image_url:
+#         print ("Error! Did not receive image URL from Cloud Servers API. Exiting." )
+#         sys.exit()
+#
+# def check_image_status(auth_token, headers, image_name, image_url):
+#     image_info = requests.get(url=image_url, headers=headers)
+#     image_status=image_info.json()["image"]["status"]
+#     image_id=image_info.json()["image"]["name"]
+#     while image_status == "SAVING":
+#         for x in range (0,100):
+#             image_info = requests.get(url=image_url, headers=headers)
+#             image_status=image_info.json()["image"]["status"]
+#             print ("Checking image status" + "." * x)
+#             sys.stdout.write("\033[F")
+#             print ("Image %s status is %s" % (image_name, image_status))
+#             time.sleep(8)
+#             if image_status == "ACTIVE":
+#                 break
+#
+# def set_image_metadata(auth_token, headers, image_name, image_url):
+#     metadata_url = ("%s/metadata" % image_url)
+#     payload = {
+#             "metadata": {
+#                 "vm_mode": "hvm"
+#                         }
+#               }
+#     image_vm_mode = requests.post(url=metadata_url, headers=headers, json=payload)
+#     image_vm_mode.raise_for_status()
+#     if image_vm_mode.ok:
+#         print ("I set image metadata on %s" % image_name)
+
+# def rebuild_server(auth_token, headers, cs_name, image_url):
+
 
 #begin main function
 @plac.annotations(
@@ -224,8 +298,12 @@ def main(glance_image):
     glance_endpoints, cs_endpoints, headers = find_endpoints(auth_token)
     glance_object, cs_endpoint, region = find_glance_image_and_cs_endpoint(auth_token, headers, cs_endpoints, glance_endpoints, glance_image)
     check_glance_image(auth_token, headers, glance_image, glance_object)
-    flavor = determine_server_flavor(auth_token, headers, glance_image, glance_object)
-    build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, flavor)
+    flavor = determine_cs_flavor(auth_token, headers, glance_image, glance_object)
+    cs_name, cs_object, cs_url = build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, flavor)
+    poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url)
+    image_name, image_url = create_cs_image(auth_token, headers, cs_name, cs_object, cs_url)
+    check_image_status(auth_token, headers, image_name, image_url)
+    set_image_metadata(auth_token, headers, image_name, image_url)
 
 if __name__ == '__main__':
     import plac
