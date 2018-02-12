@@ -12,7 +12,7 @@
 
 if ! [ -x "$(command -v xenstore-read)" ]
     then
-    printf "%s\n" "Error! xenstore-read not found in path. Install XenServer tools 
+    printf "%s\n" "Error! xenstore-read not found in path. Install xenstore-utils 
             and try again."
     exit 1
 fi
@@ -22,7 +22,10 @@ fi
 os_distro=$(xenstore-read data/os_distro)
 os_majorver=$(xenstore-read data/os_majorver)
 
-supported_distro=(ubuntu rhel centos)
+#FIXME: Include Debian 7 
+
+supported_distro=(centos debian rhel ubuntu)
+supported_deb_vers=7
 supported_rh_vers=6
 supported_ubuntu_vers=(12 14)
 
@@ -30,6 +33,14 @@ supported=false
 
 #Bail out if we don't find a supported distro
 #FIXME: move into functions
+
+if [ ${os_distro} == "debian" ]
+    then
+    if [ ${os_majorver} == ${supported_deb_vers} ]
+        then
+        supported=true
+    fi
+fi
 
 if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
     then
@@ -57,13 +68,11 @@ if [ ${supported} == "false" ]
     exit 1
 fi
 
-printf "%s\n" "Found supported OS ${os_distro} , making needed changes" >> /tmp/conv.log
-
 #Ubuntu requires grub packages to be installed, and grub itself to be installed
 
 if [ ${os_distro} == "ubuntu" ]
     then
-    printf %s "Detected Ubuntu. Installing grub and packages" > /tmp/conv.log
+    printf "%s\n" "Detected ${os_distro}. Installing grub and packages" >> /tmp/conv.log
     apt-get update >> /tmp/conv.log 2>&1
     apt-get install -qqy grub >> /tmp/conv.log
     /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
@@ -74,11 +83,21 @@ if [ ${os_distro} == "ubuntu" ]
         apt-get install -y grub >> /tmp/conv.log
         /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
     fi
+    printf "%s\n" "Changing grub config" >> /tmp/conv.log
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/menu.lst
     #Ensure grub can find the console when in HVM mode
     sed -i s/"hvc0/tty0"/g /boot/grub/menu.lst
-        
+fi
+
+if [ ${os_distro} == "debian" ] 
+    then
+    apt-get update >> /tmp/conv.log 2>&1
+    apt-get install -qqy grub >> /tmp/conv.log
+    /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
+    #Ensure grub can find the boot partition when in HVM mode
+    #Ensure grub can find the console when in HVM mode
+    sed -i s/hvc0/tty0/g /boot/grub/grub.cfg
 fi
 
 #RHEL/CentOS 6 require changes to grub.conf
@@ -90,38 +109,21 @@ if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ]
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/grub.conf
     #Ensure grub can find the console when in HVM mode
     sed -i s/hvc0/tty0/g /boot/grub/grub.conf
-
-fi
-
-#Move the old rc.local files back into place and delete script when complete
-#steps are OS-specific due to the divergent rc.local implementations
-
-if [ ${os_distro} == "ubuntu" ]
-    then 
-    #Personality backs up the file it is replacing, let's move it back
-    mv /etc/rc.local.bak.*.* /etc/rc.local 
-    #Ubuntu doesn't normally have an /etc/rc.d directory at all
-    rm /etc/rc.d/rc.local
-    rmdir /etc/rc.d
-    printf %s "Cleaning up rc.local files" >> /tmp/conv.log
 fi
 
 if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
     then
-    printf %s "Cleaning up rc.local files" >> /tmp/conv.log
-    
-    #Redhat makes /etc/rc.local a symlink to /etc/rc.d/rc.local
-    mv /etc/rc.d/rc.local.bak.*.* /etc/rc.d/rc.local
-    if [ $? -ne 0 ]
-      then
-      printf %s "Problem cleaning up /etc/rc.d/rc.local. Try it manually." >> /tmp/conv.log
+    printf %s "Cleaning up root's crontab" >> /tmp/conv.log
+    backup_script_path = "/var/spool/bak.*.*"
+    if [ -s ${backup_script_path} ]
+        then
+        mv /var/spool/bak.*.* /var/spool/cron
+        if [ $? -ne 0 ]
+            then
+            printf %s "Problem moving root's old crontab back into place. Try it manually." >> /tmp/conv.log
+            exit 1
+        fi
     fi
-    rm -f /etc/rc.local
-    if [ $? -ne 0 ]
-      then
-      printf %s "Problem cleaning up /etc/rc.local. Try it manually." >> /tmp/conv.log
-    fi
-    ln -s /etc/rc.d/rc.local /etc/rc.local
 fi
 
 exit 0

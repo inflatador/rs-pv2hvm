@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # rc-pv2hvm, a script that converts Rackspace Cloud Servers from PV to HVM mode
-# version: 0.0.2a
+# version: 0.0.3a
 # Copyright 2018 Brian King
 # License: Apache
 
@@ -149,11 +149,11 @@ def check_glance_image(auth_token, headers, glance_image, glance_object):
     image_os = (glance_object.json()["org.openstack__1__os_distro"])
     return image_os
     image_version = (glance_object.json()["org.openstack__1__os_version"])
-    supported_os =('centos', 'redhat', 'ubuntu')
+    supported_os =('centos', 'debian', 'redhat', 'ubuntu')
     supported = False
     for os in supported_os:
         if os in image_os:
-            #Check RHEL/CentOS version. We don't do this with Ubuntu because
+            #Check RHEL/CentOS version. We don't do this with Deb/Ubuntu because
             # release upgrades make this value unreliable
             if image_os == 'com.redhat' or 'org.centos':
                 if "6." in image_version:
@@ -194,11 +194,8 @@ def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, 
     image_name=(glance_object.json()["name"])
     rand_postpend = str(uuid.uuid4())
     cs_name = image_name + "-pv2hvm-" + rand_postpend[0:7]
-    #The script to inject at boot time. Personality is really small, so we
-    #must call out to another script to complete our conversion.
-    #We can't use cloud-init on RH as it's not installed on older images
-    #Red Hat uses a cronjob because it won't execute rc.local without the execute bit.
-    if image_os == "com.ubuntu":
+    #The script to inject at boot time. For Deb/Ubuntu, we use cloud-init.
+    if image_os == "com.ubuntu" or image_os == "org.debian":
         dl_script = '''
         #cloud-config
         packages:
@@ -215,10 +212,11 @@ def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, 
                     "user_data": user_data }}
                   )
     elif "centos" in image_os or "redhat" in image_os:
-    #The script to inject at boot time. Personality is really small, so we
-    #must call out to another script to complete our conversion.
-    #We can't use cloud-init on RH as it's not installed on older images
-    #Red Hat uses a cronjob because it won't execute rc.local without the execute bit.
+    #The script to inject at boot time.
+    #We can't use cloud-init on RH as it's not installed on older images.
+    #Instead, we use server personality.
+    #We have to use a crontab because of personality doesn't inject files with
+    #the execute bit.
         path = "/var/spool/cron/root"
         dl_script =  '''
 #Download script to perform PV to HVM conversion
@@ -231,7 +229,6 @@ def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, 
                         "personality": [{"path": path,
                         "contents": personality}]}}
                     )
-
     #FIXME: remove SSH key in final version
     cs_object = requests.post(url=cs_endpoint, headers=headers, json=payload)
     cs_url = cs_object.json()["server"]["links"][0]["href"]
@@ -266,16 +263,9 @@ def reboot_server(auth_token, headers, cs_name, cs_url):
                 )
     rb_request = requests.post(url=cs_url, headers=headers,json=payload)
     rb_request.raise_for_status()
-    
-#sleep for a minute so the script can convert the servers
-    print ("Sleeping for 4 minutes so the script can finish.")
-    for step in xrange(240,0,-1):
-        time.sleep(1)
-        sys.stdout.write(str(step)+' ')
-        sys.stdout.flush()
 
 def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
-#sleep for a minute so the script can convert the servers
+#sleep so the script can convert the servers
     print ("Sleeping for 4 minutes so the script can finish.")
     for step in xrange(240,0,-1):
         time.sleep(1)
@@ -283,19 +273,19 @@ def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
         sys.stdout.flush()
     print ("Creating image of server %s" % (cs_name))
     cs_url = ("%s/action" % (cs_object.json()["server"]["links"][0]["href"]))
-    image_creator = "rs-pv2hvm"
     rand_postpend = str(uuid.uuid4())
-    image_name = ("%s-%s-%s" % (cs_name, image_creator, rand_postpend[0:7]))
-    data = {
-            "createImage" : {
-                "name" : image_name,
-                "metadata": {
-                    "created_by": image_creator
-
-                }
-            }
-            }
-    image_create = requests.post(url=cs_url, headers=headers,data=json.dumps(data))
+    image_creator = "rs-pv2hvm"
+    image_name = ("%s-%s" % (cs_name, image_creator))
+    payload = (
+    { "createImage" : {
+        "name" : image_name,
+        "metadata": {
+            "created_by": image_creator
+                    }
+                        }
+    }
+                )
+    image_create = requests.post(url=cs_url, headers=headers, json=payload)
     image_create.raise_for_status()
     if image_create.ok:
         image_url = image_create.headers["Location"]
@@ -304,33 +294,38 @@ def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
     if not image_url:
         print ("Error! Did not receive image URL from Cloud Servers API. Exiting." )
         sys.exit()
-#
-# def check_image_status(auth_token, headers, image_name, image_url):
-#     image_info = requests.get(url=image_url, headers=headers)
-#     image_status=image_info.json()["image"]["status"]
-#     image_id=image_info.json()["image"]["name"]
-#     while image_status == "SAVING":
-#         for x in range (0,100):
-#             image_info = requests.get(url=image_url, headers=headers)
-#             image_status=image_info.json()["image"]["status"]
-#             print ("Checking image status" + "." * x)
-#             sys.stdout.write("\033[F")
-#             print ("Image %s status is %s" % (image_name, image_status))
-#             time.sleep(8)
-#             if image_status == "ACTIVE":
-#                 break
-#
-# def set_image_metadata(auth_token, headers, image_name, image_url):
-#     metadata_url = ("%s/metadata" % image_url)
-#     payload = {
-#             "metadata": {
-#                 "vm_mode": "hvm"
-#                         }
-#               }
-#     image_vm_mode = requests.post(url=metadata_url, headers=headers, json=payload)
-#     image_vm_mode.raise_for_status()
-#     if image_vm_mode.ok:
-#         print ("I set image metadata on %s" % image_name)
+
+
+def poll_image_status(auth_token, headers, image_name, image_url):
+    image_info = requests.get(url=image_url, headers=headers)
+    image_status=image_info.json()["image"]["status"]
+    image_id=image_info.json()["image"]["name"]
+    period = "."
+    counter = 1
+    image_status = "INIT"
+    while image_status != "ACTIVE":
+        try:
+            image_status_object = requests.get (url=image_url, headers=headers)
+        except requests.ConnectionError as e:
+            print("Can't connect to API, trying again...")
+        if image_status_object.status_code == 200:
+            image_status = image_status_object.json()["image"]["status"]
+        print ("Image %s is in %s status%s" % (image_name, image_status, (period * counter)))
+        counter = counter + 1
+        time.sleep(30)
+
+
+def set_image_metadata(auth_token, headers, image_name, image_url):
+    metadata_url = ("%s/metadata" % image_url)
+    payload = {
+            "metadata": {
+                "vm_mode": "hvm"
+                        }
+              }
+    image_vm_mode = requests.post(url=metadata_url, headers=headers, json=payload)
+    image_vm_mode.raise_for_status()
+    if image_vm_mode.ok:
+        print ("I set image metadata on %s" % image_name)
 
 # def rebuild_server(auth_token, headers, cs_name, image_url):
 
@@ -349,9 +344,9 @@ def main(glance_image):
     cs_name, cs_object, cs_url = build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, image_os, flavor)
     poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, image_os)
 
-#     image_name, image_url = create_cs_image(auth_token, headers, cs_name, cs_object, cs_url)
-#     check_image_status(auth_token, headers, image_name, image_url)
-#     set_image_metadata(auth_token, headers, image_name, image_url)
+    image_name, image_url = create_cs_image(auth_token, headers, cs_name, cs_object, cs_url)
+    poll_image_status(auth_token, headers, image_name, image_url)
+    set_image_metadata(auth_token, headers, image_name, image_url)
 
 if __name__ == '__main__':
     import plac
