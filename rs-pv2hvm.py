@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # rc-pv2hvm, a script that converts Rackspace Cloud Servers from PV to HVM mode
-# version: 0.0.3a
+# version: 0.0.5a
 # Copyright 2018 Brian King
 # License: Apache
 
@@ -18,7 +18,6 @@ import requests
 import sys
 import time
 import uuid
-
 
 def getset_keyring_credentials(username=None, password=None):
     """Method to retrieve credentials from keyring."""
@@ -194,15 +193,11 @@ def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, 
     image_name=(glance_object.json()["name"])
     rand_postpend = str(uuid.uuid4())
     cs_name = image_name + "-pv2hvm-" + rand_postpend[0:7]
-    #The script to inject at boot time. For Deb/Ubuntu, we use cloud-init.
+    #The script to inject at boot time. For Ubuntu, we use cloud-init.
     if image_os == "com.ubuntu" or image_os == "org.debian":
-        dl_script = '''
-        #cloud-config
-        packages:
-          - grub
-        runcmd:
-          - [sh, -xc, "wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh " ]
-          - [sh, -xc, "bash /tmp/hvm.sh" ]
+        dl_script ='''#!/bin/bash
+wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
+bash /tmp/hvm.sh
         '''
         user_data = base64.b64encode(dl_script)
         payload = (
@@ -266,8 +261,8 @@ def reboot_server(auth_token, headers, cs_name, cs_url):
 
 def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
 #sleep so the script can convert the servers
-    print ("Sleeping for 4 minutes so the script can finish.")
-    for step in xrange(240,0,-1):
+    print ("Sleeping for 2 minutes so the script can finish.")
+    for step in xrange(120,0,-1):
         time.sleep(1)
         sys.stdout.write(str(step)+' ')
         sys.stdout.flush()
@@ -275,7 +270,7 @@ def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
     cs_url = ("%s/action" % (cs_object.json()["server"]["links"][0]["href"]))
     rand_postpend = str(uuid.uuid4())
     image_creator = "rs-pv2hvm"
-    image_name = ("%s-%s" % (cs_name, image_creator))
+    image_name = cs_name
     payload = (
     { "createImage" : {
         "name" : image_name,
@@ -298,8 +293,8 @@ def create_cs_image(auth_token, headers, cs_name, cs_object, cs_url):
 
 def poll_image_status(auth_token, headers, image_name, image_url):
     image_info = requests.get(url=image_url, headers=headers)
-    image_status=image_info.json()["image"]["status"]
-    image_id=image_info.json()["image"]["name"]
+    image_status = image_info.json()["image"]["status"]
+    image_id = image_info.json()["image"]["name"]
     period = "."
     counter = 1
     image_status = "INIT"
@@ -327,8 +322,24 @@ def set_image_metadata(auth_token, headers, image_name, image_url):
     if image_vm_mode.ok:
         print ("I set image metadata on %s" % image_name)
 
-# def rebuild_server(auth_token, headers, cs_name, image_url):
-
+def rebuild_server(auth_token, headers, cs_name, cs_url, image_url):
+    image_id=image_url.split('//')[1].split('/')[4]
+    print ("Rebuilding %s with new HVM-mode image" % (cs_name))
+    cs_url = ("%s/action" % (cs_url))
+    payload = (
+    { "rebuild": {
+                "imageRef" : image_id,
+                "key_name" : "rackesc"
+                }
+    }
+                )
+    rebuild_request = requests.post(url=cs_url, headers=headers,json=payload)
+    rebuild_request.raise_for_status()
+    rebuild_object = rebuild_request.json()
+    print rebuild_object
+    cs_rebuilt_rootpw = rebuild_object["server"]["adminPass"]
+    print ("Server is building. New root password will be %s ." % (cs_rebuilt_rootpw))
+    poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, image_os)
 
 #begin main function
 @plac.annotations(
@@ -336,17 +347,27 @@ def set_image_metadata(auth_token, headers, image_name, image_url):
                 )
 def main(glance_image):
     username,password = getset_keyring_credentials()
+
     auth_token = get_auth_token(username, password)
+
     glance_endpoints, cs_endpoints, headers = find_endpoints(auth_token)
+
     glance_object, cs_endpoint, region = find_glance_image_and_cs_endpoint(auth_token, headers, cs_endpoints, glance_endpoints, glance_image)
+
     image_os = check_glance_image(auth_token, headers, glance_image, glance_object)
+
     flavor = determine_cs_flavor(auth_token, headers, glance_image, glance_object)
     cs_name, cs_object, cs_url = build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, image_os, flavor)
+
     poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, image_os)
 
     image_name, image_url = create_cs_image(auth_token, headers, cs_name, cs_object, cs_url)
+
     poll_image_status(auth_token, headers, image_name, image_url)
+
     set_image_metadata(auth_token, headers, image_name, image_url)
+
+    rebuild_server(auth_token, headers, cs_name, cs_url, image_url)
 
 if __name__ == '__main__':
     import plac

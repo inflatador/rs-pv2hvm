@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hvm.sh, makes OS layer changes needed to convert server to PV-HVM mode
 # supported OS: RHEL/CentOS 6, Ubuntu 12/14
-# version: 0.0.7a
+# version: 0.0.8a
 # Copyright 2018 Brian King
 # License: Apache
 
@@ -87,7 +87,7 @@ if [ ${os_distro} == "ubuntu" ]
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/menu.lst
     #Ensure grub can find the console when in HVM mode
-    sed -i s/"hvc0/tty0"/g /boot/grub/menu.lst
+    sed -i s/"hvc0"/"tty0"/g /boot/grub/menu.lst
 fi
 
 if [ ${os_distro} == "debian" ] 
@@ -96,6 +96,7 @@ if [ ${os_distro} == "debian" ]
     apt-get install -qqy grub >> /tmp/conv.log
     /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
     #Ensure grub can find the boot partition when in HVM mode
+    sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/menu.lst
     #Ensure grub can find the console when in HVM mode
     sed -i s/hvc0/tty0/g /boot/grub/grub.cfg
 fi
@@ -103,7 +104,7 @@ fi
 #RHEL/CentOS 6 require changes to grub.conf
 if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
     then
-    printf %s "Detected ${os_distro} 6. Changing grub config" >> /tmp/conv.log
+    printf "%s\n" "Detected ${os_distro} 6. Changing grub config" >> /tmp/conv.log
     
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/grub.conf
@@ -113,14 +114,14 @@ fi
 
 if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
     then
-    printf %s "Cleaning up root's crontab" >> /tmp/conv.log
-    backup_script_path = "/var/spool/bak.*.*"
+    printf "%s\n" "Cleaning up root's crontab" >> /tmp/conv.log
+    backup_script_path="/var/spool/cron/root.bak*"
     if [ -s ${backup_script_path} ]
         then
-        mv /var/spool/bak.*.* /var/spool/cron
+        mv /var/spool/cron/root.bak* /var/spool/cron/root
         if [ $? -ne 0 ]
             then
-            printf %s "Problem moving root's old crontab back into place. Try it manually." >> /tmp/conv.log
+            printf "%s\n" "Problem moving root's old crontab back into place. Try it manually." >> /tmp/conv.log
             exit 1
         fi
     fi
