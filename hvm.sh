@@ -101,11 +101,17 @@ if [ ${os_distro} == "debian" ]
     sed -i s/hvc0/tty0/g /boot/grub/grub.cfg
 fi
 
-#RHEL/CentOS 6 require changes to grub.conf
+#RHEL/CentOS 6 require changes to grub. Heredoc is required because
+#grub-install script is broken on these OSes.
 if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
     then
     printf "%s\n" "Detected ${os_distro} 6. Changing grub config" >> /tmp/conv.log
-    
+    /sbin/grub --batch << EOF 
+    device (hd0) /dev/xvda
+    root (hd0,0)
+    setup (hd0)
+    quit
+EOF
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/grub.conf
     #Ensure grub can find the console when in HVM mode
