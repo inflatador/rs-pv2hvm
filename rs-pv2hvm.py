@@ -330,8 +330,7 @@ def rebuild_server(auth_token, headers, cs_name, cs_object, cs_url, image_url):
     cs_url = ("%s/action" % (cs_url))
     payload = (
     { "rebuild": {
-                "imageRef" : image_id,
-                "key_name" : "rackesc"
+                "imageRef" : image_id
                 }
     }
                 )
