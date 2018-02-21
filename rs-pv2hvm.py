@@ -201,7 +201,7 @@ bash /tmp/hvm.sh
         '''
         user_data = base64.b64encode(dl_script)
         payload = (
-                    { "server": {"name": cs_name, "key_name": "rackesc",
+                    { "server": {"name": cs_name,
                     "imageRef": glance_image, "flavorRef": flavor,
                     "config_drive": True,
                     "user_data": user_data }}
@@ -225,12 +225,11 @@ end script
 '''
         personality = base64.b64encode(dl_script)
         payload = (
-            { "server": {"name": cs_name, "key_name": "rackesc",
+            { "server": {"name": cs_name,
                         "imageRef": glance_image, "flavorRef": flavor,
                         "personality": [{"path": path,
                         "contents": personality}]}}
                     )
-    #FIXME: remove SSH key in final version
     cs_object = requests.post(url=cs_endpoint, headers=headers, json=payload)
     cs_url = cs_object.json()["server"]["links"][0]["href"]
     print("Sent build request for server %s" % (cs_name))
@@ -339,7 +338,6 @@ def rebuild_server(auth_token, headers, cs_name, cs_object, cs_url, image_url):
     rebuild_request = requests.post(url=cs_url, headers=headers,json=payload)
     rebuild_request.raise_for_status()
     rebuild_object = rebuild_request.json()
-    print rebuild_object
     cs_rebuilt_rootpw = rebuild_object["server"]["adminPass"]
     ipv4 = rebuild_object["server"]["accessIPv4"]
     ipv6 = rebuild_object["server"]["accessIPv6"]
@@ -367,11 +365,9 @@ def main(glance_image):
 
     poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, desired_status="ACTIVE")
 
-#Reboot to activate the upstart job
-    upstart_os = ['centos', 'redhat', 'ubuntu']
-    for os in upstart_os:
-        if image_os in os:
-            reboot_server(auth_token, headers, cs_name, cs_url)
+    #FIXME: Don't reboot Debian as it's not necessary
+    reboot_server(auth_token, headers, cs_name, cs_url)
+
     image_name, image_url = create_cs_image(auth_token, headers, cs_name, cs_object, cs_url)
 
     poll_image_status(auth_token, headers, image_name, image_url)

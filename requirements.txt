@@ -1,3 +1,4 @@
+#Keyring 5.6 or earlier may be necessary on Mac OS.
 keyring
 plac
 requests
