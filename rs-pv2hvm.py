@@ -378,7 +378,7 @@ def main(glance_image):
 
     poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, desired_status="ACTIVE")
 
-    print ("Server %s is done rebuilding. Try logging in now! Public IPs are: %s and %s" % ( cs_name, ipv4, ipv6) )
+    print ("Server %s is done rebuilding. Please login now and verify that it built correctly. Public IPs are: %s and %s" % ( cs_name, ipv4, ipv6) )
 
 if __name__ == '__main__':
     import plac

@@ -1,7 +1,10 @@
-# rc-pv2hvm
-a script that converts Rackspace Cloud Servers from PV to HVM mode
-# Not complete!
-This is pre-alpha software. README will be updated when this is ready.
+# rs-pv2hvm
+a script that performs the following steps:
+ - Build server from image
+ - Perform OS-level steps needed to support HVM mode
+ - Image server
+ - Set HVM mode flag on Cloud Server image
+ - Rebuild new server on top of server created in first step
 
 ## Use Case
 
@@ -17,4 +20,4 @@ Rackspace Cloud Server image. Works with CentOS/RHEL 6, Debian 7, and Ubuntu 12/
 ```bash
 python rs-pv2hvm.py $IMG
 ```
-where $IMG is a Rackspace Cloud server UUID.
+where $IMG is a Rackspace Cloud Server image UUID.
