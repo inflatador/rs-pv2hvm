@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # rc-pv2hvm, a script that converts Rackspace Cloud Servers from PV to HVM mode
-# version: 0.0.5a
+# version: 0.0.6a
 # Copyright 2018 Brian King
 # License: Apache
 
@@ -193,8 +193,8 @@ def build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, 
     image_name=(glance_object.json()["name"])
     rand_postpend = str(uuid.uuid4())
     cs_name = image_name + "-pv2hvm-" + rand_postpend[0:7]
-    #The script to inject at boot time. For Ubuntu, we use cloud-init.
-    if image_os == "com.ubuntu" or image_os == "org.debian":
+    #The script to inject at boot time. For Debian, we use cloud-init.
+    if image_os == "org.debian":
         dl_script ='''#!/bin/bash
 wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
 bash /tmp/hvm.sh
@@ -206,16 +206,22 @@ bash /tmp/hvm.sh
                     "config_drive": True,
                     "user_data": user_data }}
                   )
-    elif "centos" in image_os or "redhat" in image_os:
+    elif "centos" in image_os or "redhat" in image_os or "com.ubuntu" == image_os:
     #The script to inject at boot time.
-    #We can't use cloud-init on RH as it's not installed on older images.
-    #Instead, we use server personality.
-    #We have to use a crontab because of personality doesn't inject files with
-    #the execute bit.
-        path = "/var/spool/cron/root"
-        dl_script =  '''
-#Download script to perform PV to HVM conversion
-@reboot /usr/bin/wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh; /bin/bash /tmp/hvm.sh
+    #Cloud-init is unreliable or missing on Ubuntu 12 and RHEL6, so we use
+    #Server personality and upstart job
+        path = "/etc/init/pv-convert.conf"
+        dl_script =  '''description "Download and execute PV to HVM conversion script"
+author "Brian King"
+start on runlevel S or stopping rc RUNLEVEL=[234]
+task
+script
+    /usr/bin/wget -qO /tmp/hvm.sh http://e942b029c256ec323134-d1408b968928561823109cb66c47ebcd.r37.cf5.rackcdn.com/hvm.sh
+    exec /bin/bash /tmp/hvm.sh
+end script
+pre-start script
+    printf "%s\n" "[$(date)] PV conversion upstart job is starting " >> /tmp/pv2hvm.log
+end script
 '''
         personality = base64.b64encode(dl_script)
         payload = (
@@ -230,22 +236,19 @@ bash /tmp/hvm.sh
     print("Sent build request for server %s" % (cs_name))
     return cs_name, cs_object, cs_url
 
-def poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, image_os):
+def poll_cs_status(auth_token, headers, cs_name, cs_obj, cs_url, desired_status="ACTIVE"):
     period = "."
     counter = 1
     cs_status = "INIT"
-    while cs_status != "ACTIVE":
+    while cs_status != desired_status:
         try:
-            cs_status_object = requests.get(url=cs_url, headers=headers)
+            cs_status_obj = requests.get(url=cs_url, headers=headers)
         except requests.ConnectionError as e:
             print("Can't connect to API, trying again....")
-        if cs_status_object.status_code == 200:
-            cs_status = cs_status_object.json()["server"]["status"]
+        cs_status = cs_status_obj.json()["server"]["status"]
         print ("Server %s is in %s status%s" % (cs_name, cs_status, (period * counter)))
         counter = counter + 1
         time.sleep(15)
-    if "centos" in image_os or "redhat" in image_os:
-        reboot_server(auth_token, headers, cs_name, cs_url)
 
 def reboot_server(auth_token, headers, cs_name, cs_url):
     print ("Rebooting server %s to activate the script" % (cs_name))
@@ -300,7 +303,7 @@ def poll_image_status(auth_token, headers, image_name, image_url):
     image_status = "INIT"
     while image_status != "ACTIVE":
         try:
-            image_status_object = requests.get (url=image_url, headers=headers)
+            image_status_object = requests.get(url=image_url, headers=headers)
         except requests.ConnectionError as e:
             print("Can't connect to API, trying again...")
         if image_status_object.status_code == 200:
@@ -322,7 +325,7 @@ def set_image_metadata(auth_token, headers, image_name, image_url):
     if image_vm_mode.ok:
         print ("I set image metadata on %s" % image_name)
 
-def rebuild_server(auth_token, headers, cs_name, cs_url, image_url):
+def rebuild_server(auth_token, headers, cs_name, cs_object, cs_url, image_url):
     image_id=image_url.split('//')[1].split('/')[4]
     print ("Rebuilding %s with new HVM-mode image" % (cs_name))
     cs_url = ("%s/action" % (cs_url))
@@ -338,8 +341,10 @@ def rebuild_server(auth_token, headers, cs_name, cs_url, image_url):
     rebuild_object = rebuild_request.json()
     print rebuild_object
     cs_rebuilt_rootpw = rebuild_object["server"]["adminPass"]
-    print ("Server is building. New root password will be %s ." % (cs_rebuilt_rootpw))
-    poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, image_os)
+    ipv4 = rebuild_object["server"]["accessIPv4"]
+    ipv6 = rebuild_object["server"]["accessIPv6"]
+    print ("Server is building. New root password will be %s .\n" % (cs_rebuilt_rootpw))
+    return ipv4, ipv6
 
 #begin main function
 @plac.annotations(
@@ -357,17 +362,27 @@ def main(glance_image):
     image_os = check_glance_image(auth_token, headers, glance_image, glance_object)
 
     flavor = determine_cs_flavor(auth_token, headers, glance_image, glance_object)
+
     cs_name, cs_object, cs_url = build_server(auth_token, headers, cs_endpoint, glance_image, glance_object, image_os, flavor)
 
-    poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, image_os)
+    poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, desired_status="ACTIVE")
 
+#Reboot to activate the upstart job
+    upstart_os = ['centos', 'redhat', 'ubuntu']
+    for os in upstart_os:
+        if image_os in os:
+            reboot_server(auth_token, headers, cs_name, cs_url)
     image_name, image_url = create_cs_image(auth_token, headers, cs_name, cs_object, cs_url)
 
     poll_image_status(auth_token, headers, image_name, image_url)
 
     set_image_metadata(auth_token, headers, image_name, image_url)
 
-    rebuild_server(auth_token, headers, cs_name, cs_url, image_url)
+    ipv4, ipv6 = rebuild_server(auth_token, headers, cs_name, cs_object, cs_url, image_url)
+
+    poll_cs_status(auth_token, headers, cs_name, cs_object, cs_url, desired_status="ACTIVE")
+
+    print ("Server %s is done rebuilding. Try logging in now! Public IPs are: %s and %s" % ( cs_name, ipv4, ipv6) )
 
 if __name__ == '__main__':
     import plac

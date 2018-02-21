@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hvm.sh, makes OS layer changes needed to convert server to PV-HVM mode
 # supported OS: RHEL/CentOS 6, Ubuntu 12/14
-# version: 0.0.8a
+# version: 0.0.1b
 # Copyright 2018 Brian King
 # License: Apache
 
@@ -22,8 +22,7 @@ fi
 os_distro=$(xenstore-read data/os_distro)
 os_majorver=$(xenstore-read data/os_majorver)
 
-#FIXME: Include Debian 7 
-
+#Supported OS: CentOS/RHEL6, Debian 7, Ubuntu 12/14
 supported_distro=(centos debian rhel ubuntu)
 supported_deb_vers=7
 supported_rh_vers=6
@@ -63,8 +62,9 @@ fi
 
 if [ ${supported} == "false" ]
     then
-    printf "%s\n" "Did not find supported OS/version combo\
-    (RHEL/Cent6 or Ubuntu12/14). Exiting." >> /tmp/conv.log
+    # the ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} var prints the name of the script in the logs
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}: Did not find supported OS/version combo\
+    (RHEL/Cent6, Debian 7, or Ubuntu12/14). Exiting." >> /tmp/pv2hvm.log
     exit 1
 fi
 
@@ -72,18 +72,18 @@ fi
 
 if [ ${os_distro} == "ubuntu" ]
     then
-    printf "%s\n" "Detected ${os_distro}. Installing grub and packages" >> /tmp/conv.log
-    apt-get update >> /tmp/conv.log 2>&1
-    apt-get install -qqy grub >> /tmp/conv.log
-    /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}: -1 ]} Detected ${os_distro}. Installing grub and packages" >> /tmp/pv2hvm.log
+    apt-get update >> /tmp/pv2hvm.log 2>&1
+    apt-get install -qqy grub >> /tmp/pv2hvm.log
+    /usr/sbin/grub-install /dev/xvda >> /tmp/pv2hvm.log
     if [ $? -ne 0 ]
         then
-        printf %s "Couldn't run grub-install. let's try again" >> /tmp/conv.log
-        apt-get update >> /tmp/conv.log 2>&1
-        apt-get install -y grub >> /tmp/conv.log
-        /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
+        printf %s "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Couldn't run grub-install. let's try again" >> /tmp/pv2hvm.log
+        apt-get update >> /tmp/pv2hvm.log 2>&1
+        apt-get install -y grub >> /tmp/pv2hvm.log
+        /usr/sbin/grub-install /dev/xvda >> /tmp/pv2hvm.log
     fi
-    printf "%s\n" "Changing grub config" >> /tmp/conv.log
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Changing grub config" >> /tmp/pv2hvm.log
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/menu.lst
     #Ensure grub can find the console when in HVM mode
@@ -92,9 +92,10 @@ fi
 
 if [ ${os_distro} == "debian" ] 
     then
-    apt-get update >> /tmp/conv.log 2>&1
-    apt-get install -qqy grub >> /tmp/conv.log
-    /usr/sbin/grub-install /dev/xvda >> /tmp/conv.log
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Detected ${os_distro}. Installing grub and packages" >> /tmp/pv2hvm.log
+    apt-get update >> /tmp/pv2hvm.log 2>&1
+    apt-get install -qqy grub >> /tmp/pv2hvm.log
+    /usr/sbin/grub-install /dev/xvda >> /tmp/pv2hvm.log
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/menu.lst
     #Ensure grub can find the console when in HVM mode
@@ -105,31 +106,29 @@ fi
 #grub-install script is broken on these OSes.
 if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
     then
-    printf "%s\n" "Detected ${os_distro} 6. Changing grub config" >> /tmp/conv.log
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Detected ${os_distro} 6. Changing grub config" >> /tmp/pv2hvm.log
     /sbin/grub --batch << EOF 
     device (hd0) /dev/xvda
     root (hd0,0)
     setup (hd0)
     quit
 EOF
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Changing grub config" >> /tmp/pv2hvm.log
     #Ensure grub can find the boot partition when in HVM mode
     sed -i s/"(hd0)"/"(hd0,0)"/g /boot/grub/grub.conf
     #Ensure grub can find the console when in HVM mode
     sed -i s/hvc0/tty0/g /boot/grub/grub.conf
 fi
 
-if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] 
+if [ ${os_distro} == "centos" ] || [ ${os_distro} == "rhel" ] || [ ${os_distro} == "ubuntu" ] 
     then
-    printf "%s\n" "Cleaning up root's crontab" >> /tmp/conv.log
-    backup_script_path="/var/spool/cron/root.bak*"
-    if [ -s ${backup_script_path} ]
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Removing pv-convert upstart job" >> /tmp/pv2hvm.log
+    job_path="/etc/init/pv-convert.conf"
+    rm -f /etc/init/pv-convert.conf
+    if [ $? -ne 0 ]
         then
-        mv /var/spool/cron/root.bak* /var/spool/cron/root
-        if [ $? -ne 0 ]
-            then
-            printf "%s\n" "Problem moving root's old crontab back into place. Try it manually." >> /tmp/conv.log
-            exit 1
-        fi
+        printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]} Problem removing pv-convert upstart job." >> /tmp/pv2hvm.log
+        exit 1
     fi
 fi
 
