@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hvm.sh, makes OS layer changes needed to convert server to PV-HVM mode
-# supported OS: RHEL/CentOS 6, Ubuntu 12/14
-# version: 0.0.1b
+# supported OS: Debian 7, RHEL/CentOS 6, Ubuntu 12/14
+# version: 0.0.2b
 # Copyright 2018 Brian King
 # License: Apache
 
@@ -12,7 +12,7 @@
 
 if ! [ -x "$(command -v xenstore-read)" ]
     then
-    printf "%s\n" "Error! xenstore-read not found in path. Install xenstore-utils 
+    printf "%s\n" "[$(date)] ${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}Error! xenstore-read not found in path. Install xenstore-utils 
             and try again."
     exit 1
 fi
